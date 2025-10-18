@@ -15,6 +15,8 @@ set(CROW_BUILD_TESTS FALSE)
 
 add_subdirectory(external/Crow EXCLUDE_FROM_ALL)
 
+find_package(spdlog REQUIRED)
+
 add_executable(${CMAKE_PROJECT_NAME} ${SOURCES})
 
-target_link_libraries(${CMAKE_PROJECT_NAME} PUBLIC Crow::Crow)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Crow::Crow spdlog::spdlog)
