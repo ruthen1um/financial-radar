@@ -1,1 +1,2 @@
-Запускать с помощью `docker compose up`
+# Running
+Use `docker compose up --build` to recompile code and run app.
