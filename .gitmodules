@@ -4,3 +4,9 @@
 [submodule "external/AMQP-CPP"]
 	path = external/AMQP-CPP
 	url = https://github.com/CopernicaMarketingSoftware/AMQP-CPP.git
+[submodule "external/spdlog"]
+	path = external/spdlog
+	url = https://github.com/gabime/spdlog.git
+[submodule "external/date"]
+	path = external/date
+	url = https://github.com/HowardHinnant/date.git
