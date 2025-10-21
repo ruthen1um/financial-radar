@@ -1,5 +1,4 @@
 ﻿#pragma once
-
 #include <string>
 #include <atomic>
 #include <thread>
@@ -9,7 +8,6 @@
 #include <vector>
 #include <cstdint>
 #include <chrono>
-
 #include <amqpcpp.h>
 #include <amqpcpp/linux_tcp.h>
 #include <openssl/ssl.h> // for SSL*
@@ -26,10 +24,8 @@ public:
     virtual void onError(AMQP::TcpConnection* connection, const char* message) override;
     virtual void onLost(AMQP::TcpConnection* connection) override;
     virtual void onReady(AMQP::TcpConnection* connection) override;
-
     // Match AMQP-CPP signature: returns bool and receives SSL*
     virtual bool onSecured(AMQP::TcpConnection* connection, const SSL* ssl) override;
-
     // implement pure virtual monitor()
     virtual void monitor(AMQP::TcpConnection* connection, int fd, int flags) override;
 };
@@ -71,13 +67,11 @@ private:
 
     std::string _address;
     std::atomic<bool> _running{ false };
-
     mutable std::mutex _mu;
     std::condition_variable _cv;
     std::deque<QueueItem> _queue;
     size_t _max_queue;
     int _max_retries;
-
     int _workers_count;
     std::vector<std::thread> _workers;
 
@@ -90,4 +84,8 @@ private:
 
     // Add a member for the TCP handler
     std::unique_ptr<RabbitPublisherTcpHandler> _tcpHandler;
+
+    // Reconnection control
+    std::mutex _reconnect_mu;
+    std::chrono::steady_clock::time_point _last_reconnect{ std::chrono::steady_clock::now() };
 };

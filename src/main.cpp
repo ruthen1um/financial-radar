@@ -1,8 +1,11 @@
 #include "RabbitPublisher.h"
 #include "crow.h"
-#include "time_parser.h" 
+#include "time_parser.h"
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/basic_file_sink.h>
+#include "spdlog/sinks/stdout_color_sinks.h"
 #include <uuid.h>
+
 
 #include <atomic>
 #include <regex>
@@ -224,16 +227,36 @@ int detect_workers() {
 }
 
 int main() {
-    spdlog::set_level(spdlog::level::info);
+    try {
+        spdlog::set_level(spdlog::level::info);
+        // default console logger keeps the usual output
+        auto console = spdlog::stdout_color_mt("console");
+        // dedicated error logger to file
+        auto error_logger = spdlog::basic_logger_mt("error_logger", "errors.log");
+        error_logger->set_level(spdlog::level::err);
+        error_logger->flush_on(spdlog::level::err);
+    }
+    catch (const spdlog::spdlog_ex& ex) {
+        // if logging initialization fails, print to stderr and continue
+        fprintf(stderr, "spdlog init failed: %s\n", ex.what());
+    }
+
+
     auto logmsg = build_log_json("startup", "info", "", "starting");
+    // for testing std::min(4, ...)
     int workers = detect_workers();
     std::string rabbit_url = std::getenv("RABBITMQ_URL") ? std::getenv("RABBITMQ_URL") : "amqp://guest:guest@rabbitmq:5672/";
-    RabbitPublisher publisher(rabbit_url, /*max_queue*/50000, /*max_retries*/5, /*workers*/workers);
+
+
+    RabbitPublisher publisher(rabbit_url, /*max_queue*/50000, /*max_retries*/20, /*workers*/workers);
     publisher.start();
-    spdlog::info(logmsg);
+    spdlog::info("{}", logmsg);
+
+
     crow::App<> app;
 
-    // Metrics endpoint
+
+    // Metrics endpoint (keeps same content - uses publisher methods)
     CROW_ROUTE(app, "/metrics").methods("GET"_method)([&publisher]() {
         std::ostringstream s;
         s << "publisher_published_total " << publisher.published_total() << "\n";
@@ -241,8 +264,6 @@ int main() {
         s << "publisher_enqueued_total " << publisher.enqueued_total() << "\n";
         s << "publisher_dlq_total " << publisher.dlq_total() << "\n";
         s << "publisher_queue_size " << publisher.queue_size() << "\n";
-
-        // p50/p95 from latency_samples
         std::lock_guard<std::mutex> g(lat_mu);
         if (!latency_samples.empty()) {
             auto v = latency_samples;
@@ -252,11 +273,8 @@ int main() {
             s << "api_latency_p50_ms " << v[p50_idx] << "\n";
             s << "api_latency_p95_ms " << v[p95_idx] << "\n";
         }
-
-        // original API counters (HTTP-level)
         s << "api_requests_total " << api_requests.load() << "\n";
         s << "validation_errors_total " << validation_errors.load() << "\n";
-
         return crow::response(200, s.str());
         });
 
