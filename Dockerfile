@@ -3,7 +3,7 @@ FROM ubuntu:24.04 AS build
 # Update system and install required packages
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    cmake make clang python3 libasio-dev libspdlog-dev
+    cmake make clang python3 libasio-dev libspdlog-dev libssl-dev
 
 WORKDIR /app
 

@@ -1,3 +1,4 @@
+#include "RabbitPublisher.h"
 #include "crow.h"
 #include "time_parser.h" 
 #include <spdlog/spdlog.h>
@@ -92,7 +93,9 @@ static std::string build_log_json(const std::string& component,
 
 void log_junk(const std::string& raw_body, const std::string& reason, const std::string& correlation) {
     try {
-        std::ofstream f("junk.log", std::ios::app);
+        std::string log_dir = std::getenv("JUNK_LOG_DIR") ? std::getenv("JUNK_LOG_DIR") : "/var/log/financial_radar";
+        std::string full = log_dir + "/junk.log";
+        std::ofstream f(full, std::ios::app);
         if (!f) return;
         f << "{"
             << "\"ts\":\"" << now_iso_utc() << "\","
@@ -187,36 +190,76 @@ std::string row_to_line(const TransactionRow& r) {
     return o.str();
 }
 
+int detect_workers() {
+    // 1) explicit env
+    if (const char* env = std::getenv("GPU_THREADS")) {
+        try { int v = std::stoi(env); if (v > 0) return v; }
+        catch (...) {}
+    }
+    // 2) if CUDA_VISIBLE_DEVICES set, use device count * hw_threads (pragmatic)
+    if (const char* devs = std::getenv("CUDA_VISIBLE_DEVICES")) {
+        std::string s(devs);
+        if (!s.empty()) {
+            int devices = 0;
+            std::istringstream iss(s);
+            std::string token;
+            while (std::getline(iss, token, ',')) {
+                if (!token.empty()) ++devices;
+            }
+            unsigned hw = std::thread::hardware_concurrency();
+            if (hw == 0) hw = 1;
+            return std::max(1, (int)hw * std::max(1, devices));
+        }
+    }
+    // 3) fallback to num CPU threads or 1
+    unsigned hw = std::thread::hardware_concurrency();
+    if (hw == 0) hw = 1;
+    // cap to reasonable maximum, allow override via env MAX_WORKERS
+    int max_cap = 128;
+    if (const char* envMax = std::getenv("MAX_WORKERS")) {
+        try { int v = std::stoi(envMax); if (v > 0) max_cap = v; }
+        catch (...) {}
+    }
+    return std::min<int>((int)hw, max_cap);
+}
 
 int main() {
     spdlog::set_level(spdlog::level::info);
     auto logmsg = build_log_json("startup", "info", "", "starting");
+    int workers = detect_workers();
+    std::string rabbit_url = std::getenv("RABBITMQ_URL") ? std::getenv("RABBITMQ_URL") : "amqp://guest:guest@rabbitmq:5672/";
+    RabbitPublisher publisher(rabbit_url, /*max_queue*/50000, /*max_retries*/5, /*workers*/workers);
+    publisher.start();
     spdlog::info(logmsg);
     crow::App<> app;
 
     // Metrics endpoint
-    CROW_ROUTE(app, "/metrics").methods("GET"_method)([]() {
+    CROW_ROUTE(app, "/metrics").methods("GET"_method)([&publisher]() {
         std::ostringstream s;
-        s << "api_requests_total " << api_requests.load() << "\n";
-        s << "validation_errors_total " << validation_errors.load() << "\n";
-        s << "enqueued_total " << enqueued.load() << "\n";
-        s << "enqueue_failures_total " << enqueue_failures.load() << "\n";
-        // p50/p95
+        s << "publisher_published_total " << publisher.published_total() << "\n";
+        s << "publisher_publish_failures_total " << publisher.publish_failures_total() << "\n";
+        s << "publisher_enqueued_total " << publisher.enqueued_total() << "\n";
+        s << "publisher_dlq_total " << publisher.dlq_total() << "\n";
+        s << "publisher_queue_size " << publisher.queue_size() << "\n";
+
+        // p50/p95 from latency_samples
         std::lock_guard<std::mutex> g(lat_mu);
         if (!latency_samples.empty()) {
             auto v = latency_samples;
             std::sort(v.begin(), v.end());
-            if (!v.empty()) {
-                size_t p50_idx = v.size() * 50 / 100;
-                size_t p95_idx = std::min(v.size() - 1, v.size() * 95 / 100);
-                size_t p50 = v[p50_idx];
-                size_t p95 = v[p95_idx];
-                s << "api_latency_p50_ms " << p50 << "\n";
-                s << "api_latency_p95_ms " << p95 << "\n";
-            }
+            size_t p50_idx = v.size() * 50 / 100;
+            size_t p95_idx = std::min(v.size() - 1, v.size() * 95 / 100);
+            s << "api_latency_p50_ms " << v[p50_idx] << "\n";
+            s << "api_latency_p95_ms " << v[p95_idx] << "\n";
         }
+
+        // original API counters (HTTP-level)
+        s << "api_requests_total " << api_requests.load() << "\n";
+        s << "validation_errors_total " << validation_errors.load() << "\n";
+
         return crow::response(200, s.str());
         });
+
 
     // Ingest endpoint with verbose logging
     CROW_ROUTE(app, "/transactions").methods("POST"_method)([&](const crow::request& req) {
@@ -521,8 +564,8 @@ int main() {
                 { {"payload_len", std::to_string(row_line.size())} });
             //spdlog::info(logmsg);
 
-            // TODO: publish to RabbitMQ
-            bool ok = true;
+            // publish to RabbitMQ
+            bool ok = publisher.publish(row_line, "transactions");
             logmsg = build_log_json("ingest", "info", correlation, "publishing_to_queue_attempt");
             //spdlog::info(logmsg);
             if (!ok) {

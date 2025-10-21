@@ -4,6 +4,7 @@ project(financial_radar LANGUAGES CXX)
 
 # Dependency configuration
 find_package(spdlog REQUIRED)
+set(AMQP-CPP_LINUX_TCP ON CACHE BOOL "Build AMQP-CPP linux TCP module" FORCE)
 add_subdirectory(external/AMQP-CPP EXCLUDE_FROM_ALL)
 
 set(CROW_ENABLE_COMPRESSION FALSE)

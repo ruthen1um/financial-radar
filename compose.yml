@@ -1,5 +1,36 @@
 services:
+  rabbitmq:
+    image: rabbitmq:3.9-management
+    container_name: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"     # amqp
+      - "15672:15672"   # management web UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   app:
     build: .
+    container_name: financial-ingest
     ports:
-      - 80:80
+      - "80:80"
+    environment:
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+      JUNK_LOG_DIR: "/var/log/financial_radar"
+    volumes:
+      - ./logs:/var/log/financial_radar
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  rabbitmq_data:
