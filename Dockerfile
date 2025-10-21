@@ -48,10 +48,12 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-COPY --from=build_deps /usr/local /usr/local
+COPY --from=build_deps /usr/local/cmake /usr/local/cmake
+COPY --from=build_deps /usr/local/lib /usr/local/lib
+COPY --from=build_deps /usr/local/include /usr/local/include
 
-COPY src /app/src
 COPY CMakeLists.txt /app/CMakeLists.txt
+COPY src /app/src
 
 RUN cmake -B build
 RUN cmake --build build
@@ -61,7 +63,6 @@ FROM ubuntu:24.04 AS runtime
 
 WORKDIR /app
 
-COPY --from=build_app /usr/local /usr/local
 COPY --from=build_app /app/build/financial_radar /app/financial_radar
 
 EXPOSE 80
