@@ -1,11 +1,12 @@
+// src/main.cpp
 #include "RabbitPublisher.h"
 #include "crow.h"
 #include "time_parser.h"
+#include <date/date.h> 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/basic_file_sink.h>
 #include "spdlog/sinks/stdout_color_sinks.h"
 #include <uuid.h>
-
 
 #include <atomic>
 #include <regex>
@@ -23,6 +24,11 @@
 #include <array>
 #include <unordered_set>
 #include <cmath>
+
+using std::chrono::milliseconds;
+using std::chrono::hours;
+using date::sys_time;
+using date::days;
 
 static std::atomic<uint64_t> api_requests{ 0 }, validation_errors{ 0 }, enqueued{ 0 }, enqueue_failures{ 0 };
 static std::vector<uint64_t> latency_samples;
@@ -288,7 +294,6 @@ int main() {
         std::string correlation = gen_correlation();
         logmsg = build_log_json("ingest", "info", correlation, "received_request",
             { {"content_length", std::to_string(req.body.size())} });
-        //spdlog::info(logmsg);
 
         const std::string raw = req.body;
         if (raw.empty()) {
@@ -303,7 +308,6 @@ int main() {
         // protective outer try/catch to avoid uncaught exception -> 500
         try {
             logmsg = build_log_json("ingest", "info", correlation, "parsing_json");
-            //spdlog::info(logmsg);
             crow::json::rvalue body;
             try {
                 body = crow::json::load(raw);
@@ -317,7 +321,6 @@ int main() {
                 return crow::response(400, out);
             }
             logmsg = build_log_json("ingest", "info", correlation, "json_parsed");
-            //spdlog::info(logmsg);
 
             TransactionRow row;
 
@@ -326,18 +329,16 @@ int main() {
                 row.transaction_id = sanitize_text(body["transaction_id"].s(), 128);
                 logmsg = build_log_json("ingest", "info", correlation, "transaction_id_provided",
                     { {"transaction_id", row.transaction_id} });
-                //spdlog::info(logmsg);
             }
             else {
                 row.transaction_id = "tx-" + correlation;
                 logmsg = build_log_json("ingest", "info", correlation, "transaction_id_generated",
                     { {"transaction_id", row.transaction_id} });
-                //spdlog::info(logmsg);
             }
 
             // timestamp
             logmsg = build_log_json("ingest", "info", correlation, "validating_timestamp");
-            //spdlog::info(logmsg);
+
             if (!body.has("timestamp") || body["timestamp"].t() != crow::json::type::String) {
                 validation_errors.fetch_add(1);
                 log_junk(raw, "missing_or_invalid_timestamp", correlation);
@@ -348,11 +349,16 @@ int main() {
             }
             row.timestamp = sanitize_text(body["timestamp"].s(), 64);
             try {
-                auto parsed_time = parse8601_full(row.timestamp);
-                auto now = sys_time<milliseconds>{ std::chrono::duration_cast<milliseconds>(std::chrono::system_clock::now().time_since_epoch()) };
+                // parse8601_full is expected to return date::sys_time<milliseconds> (or convertible)
+                date::sys_time<milliseconds> parsed_time = parse8601_full(row.timestamp);
+
+                // get now as date::sys_time<milliseconds>
+                auto now = date::sys_time<milliseconds>(std::chrono::time_point_cast<milliseconds>(std::chrono::system_clock::now()));
+
                 auto diff = parsed_time - now;
-                auto abs_diff = std::chrono::duration_cast<hours>(diff >= milliseconds(0) ? diff : -diff);
-                if (abs_diff > days(2)) {
+                auto abs_diff = std::chrono::duration_cast<hours>(diff >= milliseconds{ 0 } ? diff : -diff);
+
+                if (abs_diff > date::days{ 2 }) {
                     validation_errors.fetch_add(1);
                     log_junk(raw, "timestamp_out_of_range", correlation);
                     logmsg = build_log_json("ingest", "warn", correlation, "timestamp_out_of_range");
@@ -370,11 +376,9 @@ int main() {
                 return crow::response(400, out);
             }
             logmsg = build_log_json("ingest", "info", correlation, "timestamp_valid");
-            //spdlog::info(logmsg);
 
             // sender_account (from)
             logmsg = build_log_json("ingest", "info", correlation, "validating_sender");
-            //spdlog::info(logmsg);
             if (body.has("sender_account") && body["sender_account"].t() == crow::json::type::String) {
                 row.sender_account = sanitize_text(body["sender_account"].s(), 64);
             }
@@ -400,11 +404,9 @@ int main() {
             }
             logmsg = build_log_json("ingest", "info", correlation, "sender_valid",
                 { {"sender_account", row.sender_account} });
-            //spdlog::info(logmsg);
 
             // receiver_account (to)
             logmsg = build_log_json("ingest", "info", correlation, "validating_receiver");
-            //spdlog::info(logmsg);
             if (body.has("receiver_account") && body["receiver_account"].t() == crow::json::type::String) {
                 row.receiver_account = sanitize_text(body["receiver_account"].s(), 64);
             }
@@ -430,11 +432,9 @@ int main() {
             }
             logmsg = build_log_json("ingest", "info", correlation, "receiver_valid",
                 { {"receiver_account", row.receiver_account} });
-            //spdlog::info(logmsg);
 
             // amount
             logmsg = build_log_json("ingest", "info", correlation, "validating_amount");
-            //spdlog::info(logmsg);
             if (!body.has("amount")) {
                 validation_errors.fetch_add(1);
                 log_junk(raw, "missing_amount", correlation);
@@ -464,7 +464,6 @@ int main() {
             }
             logmsg = build_log_json("ingest", "info", correlation, "amount_valid",
                 { {"amount", std::to_string(row.amount)} });
-            //spdlog::info(logmsg);
 
             // optional string fields (sanitization)
             auto get_str_limited = [](const crow::json::rvalue& v, size_t limit)->std::string {
@@ -479,11 +478,10 @@ int main() {
             row.payment_channel = body.has("payment_channel") ? get_str_limited(body["payment_channel"], 64) : "";
             row.device_hash = body.has("device_hash") ? get_str_limited(body["device_hash"], 128) : "";
             row.ip_address = body.has("ip_address") ? get_str_limited(body["ip_address"], 64) : "";
-            //spdlog::info(R"({"component":"ingest","level":"info","correlation_id":"{}","msg":"optional_fields_sanitized"})", correlation);
+
             // is_fraud handling
             if (body.has("is_fraud")) {
                 logmsg = build_log_json("ingest", "info", correlation, "validating_is_fraud");
-                //spdlog::info(logmsg);
                 auto v = body["is_fraud"];
                 if (v.t() == crow::json::type::True || v.t() == crow::json::type::False) {
                     row.is_fraud = v.b();
@@ -507,7 +505,6 @@ int main() {
                 }
                 logmsg = build_log_json("ingest", "info", correlation, "is_fraud_parsed",
                     { {"is_fraud", std::to_string(row.is_fraud ? 1 : 0)} });
-                //spdlog::info(logmsg);
             }
 
             // numeric optional scores
@@ -574,18 +571,15 @@ int main() {
             row.description = sanitize_text(raw, 512);
             logmsg = build_log_json("ingest", "info", correlation, "description_built",
                 { {"desc_len", std::to_string(row.description.size())} });
-            //spdlog::info(logmsg);
 
             // Prepare payload (fast CSV-like)
             std::string row_line = row_to_line(row);
             logmsg = build_log_json("ingest", "info", correlation, "payload_prepared",
                 { {"payload_len", std::to_string(row_line.size())} });
-            //spdlog::info(logmsg);
 
             // publish to RabbitMQ
             bool ok = publisher.publish(row_line, "transactions");
             logmsg = build_log_json("ingest", "info", correlation, "publishing_to_queue_attempt");
-            //spdlog::info(logmsg);
             if (!ok) {
                 enqueue_failures.fetch_add(1);
                 logmsg = build_log_json("ingest", "error", correlation, "enqueue_failed");
@@ -595,7 +589,6 @@ int main() {
                 return crow::response(503, out);
             }
             logmsg = build_log_json("ingest", "info", correlation, "published_to_queue");
-            //spdlog::info(logmsg);
 
             // mark enqueued and respond
             enqueued.fetch_add(1);
@@ -615,7 +608,6 @@ int main() {
 
             logmsg = build_log_json("ingest", "info", correlation, "completed",
                 { {"transaction_id", row.transaction_id}, {"enqueue_ms", std::to_string(dur)} });
-            //spdlog::info(logmsg);
 
             return crow::response(202, acceptedStr);
         }

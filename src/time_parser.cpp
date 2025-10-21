@@ -1,84 +1,60 @@
 ﻿#include "time_parser.h"
+#include <sstream>
+#include <stdexcept>
 
-sys_time<milliseconds>
-parse8601_full(std::string const& input)
+using namespace std::chrono;
+
+date::sys_time<milliseconds> parse8601_full(const std::string& input)
 {
     std::istringstream in;
-    sys_time<milliseconds> tp;
+    date::sys_time<milliseconds> tp;
 
-    if (input.back() == 'Z') {
-        std::string modified = input.substr(0, input.size() - 1) + "+00:00";
-        in.str(modified);
+    // helper to attempt parse with given stringstream content and format
+    auto try_parse = [&](const std::string& s, const char* fmt) -> bool {
         in.clear();
-        in.exceptions(std::ios::failbit);
+        in.str(s);
         try {
-            in >> parse("%FT%T%Ez", tp);
-            return tp;
+            in.exceptions(std::ios::failbit);
+            in >> date::parse(fmt, tp);
+            return true;
         }
         catch (...) {
+            // try again without exceptions to inspect failbit in fallback attempts
             in.clear();
-            in.str(modified);
-            in >> parse("%FT%T%Ez", tp);
-            if (!in.fail()) return tp;
-        }
-    }
-
-    in.str(input);
-    in.clear();
-    in.exceptions(std::ios::failbit);
-    try {
-        in >> parse("%FT%T%Ez", tp);
-        return tp;
-    }
-    catch (...) {}
-
-    in.clear();
-    in.str(input);
-    try {
-        in >> parse("%FT%T%Ez", tp);
-        if (!in.fail()) return tp;
-    }
-    catch (...) {}
-
-    in.clear();
-    in.str(input);
-    try {
-        in >> parse("%FT%T%Ez", tp);
-        if (!in.fail()) return tp;
-    }
-    catch (...) {}
-
-    in.clear();
-    in.str(input);
-    try {
-        in >> parse("%FT%T", tp);
-        if (!in.fail()) return tp;
-    }
-    catch (...) {}
-
-    in.clear();
-    in.str(input);
-    try {
-        in >> parse("%FT%T", tp);
-        if (!in.fail()) return tp;
-    }
-    catch (...) {}
-
-    std::string temp = input;
-    size_t t_pos = temp.find('T');
-    if (t_pos == std::string::npos) {
-        t_pos = temp.find(' ');
-        if (t_pos != std::string::npos) {
-            temp.replace(t_pos, 1, "T");
-            in.clear();
-            in.str(temp);
+            in.str(s);
             try {
-                in >> parse("%FT%T%Ez", tp);
-                if (!in.fail()) return tp;
+                in >> date::parse(fmt, tp);
+                return !in.fail();
             }
-            catch (...) {}
+            catch (...) {
+                return false;
+            }
         }
+        };
+
+    // If input ends with 'Z' — convert to +00:00 for %Ez parsing
+    if (!input.empty() && input.back() == 'Z') {
+        std::string modified = input.substr(0, input.size() - 1) + "+00:00";
+        if (try_parse(modified, "%FT%T%Ez")) return tp;
     }
 
-    throw std::runtime_error("Unable to parse time: " + input);
+    // Try full ISO with timezone
+    if (try_parse(input, "%FT%T%Ez")) return tp;
+
+    // Try variants (sometimes fractional seconds or missing timezone)
+    // these attempts are intentionally permissive and repeated to handle minor differences
+    if (try_parse(input, "%FT%T")) return tp;
+    if (try_parse(input, "%F %T%Ez")) return tp;
+    if (try_parse(input, "%F %T")) return tp;
+
+    // If there is a space instead of 'T', try replacing first space with 'T' and parse
+    std::string tmp = input;
+    size_t pos = tmp.find(' ');
+    if (pos != std::string::npos) {
+        tmp.replace(pos, 1, "T");
+        if (try_parse(tmp, "%FT%T%Ez")) return tp;
+        if (try_parse(tmp, "%FT%T")) return tp;
+    }
+
+    throw std::runtime_error(std::string("Unable to parse time: ") + input);
 }

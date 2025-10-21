@@ -1,17 +1,16 @@
 ﻿#include "RabbitPublisher.h"
 #include <spdlog/spdlog.h>
-#include <spdlog/sinks/basic_file_sink.h>
-#include <amqpcpp.h>
 #include <chrono>
 #include <fstream>
 #include <filesystem>
 #include <thread>
 #include <sstream>
 #include <cstdlib>
+#include <regex>
 
 using namespace std::chrono_literals;
+using namespace AmqpClient;
 
-// small helper to build JSON-like log strings locally (no dependency on main's build_log_json)
 static std::string build_local_log(const std::string& component,
     const std::string& level,
     const std::string& msg,
@@ -28,52 +27,6 @@ static std::string build_local_log(const std::string& component,
     return o.str();
 }
 
-// Implement the TCP handler methods (definitions expected by header)
-void RabbitPublisherTcpHandler::onConnected(AMQP::TcpConnection* connection) {
-    (void)connection;
-    auto msg = build_local_log("publisher", "info", "amqp_connected");
-    spdlog::info("{}", msg);
-}
-
-void RabbitPublisherTcpHandler::onClosed(AMQP::TcpConnection* connection) {
-    (void)connection;
-    auto msg = build_local_log("publisher", "warn", "amqp_closed");
-    spdlog::warn("{}", msg);
-    if (auto elog = spdlog::get("error_logger")) elog->warn("{}", msg);
-}
-
-void RabbitPublisherTcpHandler::onError(AMQP::TcpConnection* connection, const char* message) {
-    (void)connection;
-    auto m = message ? message : "";
-    auto msg = build_local_log("publisher", "error", "amqp_error", { {"error", m} });
-    spdlog::error("{}", msg);
-    if (auto elog = spdlog::get("error_logger")) elog->error("{}", msg);
-}
-
-void RabbitPublisherTcpHandler::onLost(AMQP::TcpConnection* connection) {
-    (void)connection;
-    auto msg = build_local_log("publisher", "warn", "amqp_lost");
-    spdlog::warn("{}", msg);
-    if (auto elog = spdlog::get("error_logger")) elog->warn("{}", msg);
-}
-
-void RabbitPublisherTcpHandler::onReady(AMQP::TcpConnection* connection) {
-    (void)connection;
-    auto msg = build_local_log("publisher", "info", "amqp_ready");
-    spdlog::info("{}", msg);
-}
-
-bool RabbitPublisherTcpHandler::onSecured(AMQP::TcpConnection* connection, const SSL* ssl) {
-    (void)connection; (void)ssl;
-    auto msg = build_local_log("publisher", "info", "amqp_secured");
-    spdlog::info("{}", msg);
-    return true;
-}
-
-void RabbitPublisherTcpHandler::monitor(AMQP::TcpConnection* connection, int fd, int flags) {
-    (void)connection; (void)fd; (void)flags;
-}
-
 RabbitPublisher::RabbitPublisher(const std::string& addr,
     size_t max_queue,
     int max_retries,
@@ -81,8 +34,7 @@ RabbitPublisher::RabbitPublisher(const std::string& addr,
     : _address(addr),
     _max_queue(max_queue),
     _max_retries(max_retries),
-    _workers_count(std::max(1, number_of_workers)),
-    _tcpHandler(std::make_unique<RabbitPublisherTcpHandler>())
+    _workers_count(std::max(1, number_of_workers))
 {
 }
 
@@ -93,14 +45,14 @@ RabbitPublisher::~RabbitPublisher() {
 void RabbitPublisher::start() {
     bool expected = false;
     if (!_running.compare_exchange_strong(expected, true)) return;
-    auto start_msg = build_local_log("publisher", "info", "starting", { {"addr", _address}, {"workers", std::to_string(_workers_count)} });
+
+    auto start_msg = build_local_log("publisher", "info", "starting",
+        { {"addr", _address}, {"workers", std::to_string(_workers_count)} });
     spdlog::info("{}", start_msg);
 
-    // spawn worker threads
     _workers.reserve(_workers_count);
     for (int i = 0; i < _workers_count; ++i) {
         _workers.emplace_back(&RabbitPublisher::worker_loop, this, i);
-        // Увеличена задержка для избежания connection storm
         std::this_thread::sleep_for(std::chrono::milliseconds(100 + (i * 50)));
     }
 }
@@ -109,7 +61,6 @@ void RabbitPublisher::stop() {
     bool expected = true;
     if (!_running.compare_exchange_strong(expected, false)) return;
 
-    // notify all workers and join
     {
         std::lock_guard<std::mutex> l(_mu);
         _cv.notify_all();
@@ -119,7 +70,6 @@ void RabbitPublisher::stop() {
     }
     _workers.clear();
 
-    // persist remaining queue to DLQ to avoid silent loss
     std::lock_guard<std::mutex> l(_mu);
     while (!_queue.empty()) {
         persist_dlq(_queue.front(), "shutdown");
@@ -136,14 +86,16 @@ bool RabbitPublisher::publish(const std::string& payload, const std::string& rou
         spdlog::warn("Circuit breaker: too many failures, rejecting");
         return false;
     }
+
     std::unique_lock<std::mutex> l(_mu);
     if (_queue.size() >= _max_queue) {
         _publish_failures.fetch_add(1);
-        auto warn_msg = build_local_log("publisher", "warn", "enqueue_rejected", { {"reason","queue_full"}, {"max_queue", std::to_string(_max_queue)} });
+        auto warn_msg = build_local_log("publisher", "warn", "enqueue_rejected",
+            { {"reason","queue_full"}, {"max_queue", std::to_string(_max_queue)} });
         spdlog::warn("{}", warn_msg);
-        if (auto elog = spdlog::get("error_logger")) elog->warn("{}", warn_msg);
         return false;
     }
+
     QueueItem it;
     it.payload = payload;
     it.routing = routingKey;
@@ -181,23 +133,42 @@ void RabbitPublisher::persist_dlq(const QueueItem& it, const std::string& reason
         }
         f << "\n";
     }
-    catch (...) {
-        // never throw
+    catch (...) {}
+}
+
+RabbitPublisher::ConnectionParams RabbitPublisher::parse_url(const std::string& url) {
+    ConnectionParams params;
+
+    // amqp://user:pass@host:port/vhost
+    std::regex re(R"(amqps?://([^:]+):([^@]+)@([^:]+):?(\d+)?(/.*)?)");;
+    std::smatch match;
+
+    if (std::regex_match(url, match, re)) {
+        params.username = match[1].str();
+        params.password = match[2].str();
+        params.host = match[3].str();
+        if (match[4].matched) {
+            params.port = std::stoi(match[4].str());
+        }
+        if (match[5].matched) {
+            params.vhost = match[5].str();
+            if (params.vhost[0] == '/') params.vhost = params.vhost.substr(1);
+            if (params.vhost.empty()) params.vhost = "/";
+        }
     }
+
+    return params;
 }
 
 void RabbitPublisher::worker_loop(int worker_id) {
-    std::unique_ptr<AMQP::TcpConnection> connection;
-    std::unique_ptr<AMQP::TcpChannel> channel;
-    auto workerTcpHandler = std::make_unique<RabbitPublisherTcpHandler>();
-
+    Channel::ptr_t channel;
     int backoff_ms = 1000;
     std::vector<QueueItem> batch;
     const size_t BATCH_SIZE = 10;
 
     while (_running.load()) {
-        // Ensure connection for this worker
-        if (!channel || !connection) {
+        // Ensure connection
+        if (!channel) {
             {
                 std::lock_guard<std::mutex> rlock(_reconnect_mu);
                 auto now = std::chrono::steady_clock::now();
@@ -207,21 +178,34 @@ void RabbitPublisher::worker_loop(int worker_id) {
                 }
                 _last_reconnect = now;
             }
+
             try {
-                AMQP::Address addr(_address);
-                connection.reset(new AMQP::TcpConnection(workerTcpHandler.get(), addr));
-                channel.reset(new AMQP::TcpChannel(connection.get()));
-                try { channel->confirmSelect(); }
-                catch (...) {}
-                auto msg = build_local_log("publisher", "info", "worker_connected", { {"id", std::to_string(worker_id)} });
+                auto params = parse_url(_address);
+                // Build OpenOpts using the library's API
+                AmqpClient::Channel::OpenOpts opts;
+                opts.host = params.host;
+                opts.port = params.port;
+                opts.vhost = params.vhost;
+                opts.frame_max = 131072; // optional, typical default
+
+                // pass username/password via the auth variant
+                opts.auth = AmqpClient::Channel::OpenOpts::BasicAuth{ params.username, params.password };
+
+                channel = AmqpClient::Channel::Open(opts);
+                // Declare queue
+                channel->DeclareQueue("transactions", false, true, false, false);
+
+                auto msg = build_local_log("publisher", "info", "worker_connected",
+                    { {"id", std::to_string(worker_id)} });
                 spdlog::info("{}", msg);
                 backoff_ms = 1000;
             }
             catch (const std::exception& e) {
-                auto err = build_local_log("publisher", "error", "worker_connect_failed", { {"id", std::to_string(worker_id)}, {"error", e.what()} });
+                auto err = build_local_log("publisher", "error", "worker_connect_failed",
+                    { {"id", std::to_string(worker_id)}, {"error", e.what()} });
                 spdlog::error("{}", err);
-                if (auto elog = spdlog::get("error_logger")) elog->error("{}", err);
-                connection.reset(); channel.reset();
+
+                channel.reset();
                 for (int slept = 0; slept < backoff_ms && _running.load(); slept += 200)
                     std::this_thread::sleep_for(200ms);
                 backoff_ms = std::min(60000, backoff_ms * 2);
@@ -229,7 +213,7 @@ void RabbitPublisher::worker_loop(int worker_id) {
             }
         }
 
-        // Collect batch of ready items
+        // Collect batch
         {
             std::unique_lock<std::mutex> l(_mu);
             while (_queue.empty() && _running.load()) {
@@ -249,17 +233,22 @@ void RabbitPublisher::worker_loop(int worker_id) {
             }
         }
 
-        // Skip if no items ready
         if (batch.empty()) {
             continue;
         }
 
-        // Publish batch - с обработкой ошибок per-item
+        // Publish batch
         int failed_count = 0;
         for (auto& item : batch) {
             try {
                 if (!channel) throw std::runtime_error("channel_not_ready");
-                channel->publish("", item.routing.empty() ? "transactions" : item.routing, item.payload);
+
+                auto message = BasicMessage::Create(item.payload);
+                message->DeliveryMode(BasicMessage::dm_persistent);
+
+                std::string routing = item.routing.empty() ? "transactions" : item.routing;
+                channel->BasicPublish("", routing, message);
+
                 _published.fetch_add(1);
                 auto okm = build_local_log("publisher", "info", "published", {
                     {"worker", std::to_string(worker_id)},
@@ -272,27 +261,19 @@ void RabbitPublisher::worker_loop(int worker_id) {
                 failed_count++;
                 item.attempts += 1;
                 _publish_failures.fetch_add(1);
+
                 auto pf = build_local_log("publisher", "error", "publish_failed", {
                     {"worker", std::to_string(worker_id)},
                     {"error", e.what()},
                     {"attempts", std::to_string(item.attempts)}
                     });
                 spdlog::error("{}", pf);
-                if (auto elog = spdlog::get("error_logger")) elog->error("{}", pf);
 
                 if (item.attempts > _max_retries) {
                     _dlq.fetch_add(1);
                     persist_dlq(item, e.what());
-                    auto dlq = build_local_log("publisher", "error", "moved_to_dlq", {
-                        {"worker", std::to_string(worker_id)},
-                        {"routing", item.routing},
-                        {"attempts", std::to_string(item.attempts)}
-                        });
-                    spdlog::error("{}", dlq);
-                    if (auto elog = spdlog::get("error_logger")) elog->error("{}", dlq);
                 }
                 else {
-                    // Re-queue with exponential backoff
                     int base_ms = 100;
                     int delay_ms = base_ms * (1 << (std::min(item.attempts - 1, 10)));
                     item.next_try = std::chrono::steady_clock::now() + std::chrono::milliseconds(delay_ms);
@@ -302,36 +283,12 @@ void RabbitPublisher::worker_loop(int worker_id) {
                     }
                 }
             }
-            catch (...) {
-                failed_count++;
-                item.attempts += 1;
-                _publish_failures.fetch_add(1);
-                auto unk = build_local_log("publisher", "error", "publish_unknown_failure", {
-                    {"worker", std::to_string(worker_id)},
-                    {"attempts", std::to_string(item.attempts)}
-                    });
-                spdlog::error("{}", unk);
-                if (auto elog = spdlog::get("error_logger")) elog->error("{}", unk);
-
-                if (item.attempts > _max_retries) {
-                    _dlq.fetch_add(1);
-                    persist_dlq(item, "unknown");
-                }
-                else {
-                    int base_ms = 100;
-                    int delay_ms = base_ms * (1 << (std::min(item.attempts - 1, 10)));
-                    item.next_try = std::chrono::steady_clock::now() + std::chrono::milliseconds(delay_ms);
-                    std::lock_guard<std::mutex> l(_mu);
-                    _queue.emplace_back(std::move(item));
-                }
-            }
         }
 
-        // Reset connection only if too many failures in this batch
+        // Reset connection if too many failures
         if (static_cast<size_t>(failed_count) > batch.size() / 2) {
             try {
                 channel.reset();
-                connection.reset();
                 auto msg = build_local_log("publisher", "warn", "connection_reset_due_to_failures", {
                     {"worker", std::to_string(worker_id)},
                     {"failed", std::to_string(failed_count)},
@@ -345,6 +302,6 @@ void RabbitPublisher::worker_loop(int worker_id) {
         batch.clear();
     }
 
-    try { channel.reset(); connection.reset(); }
+    try { channel.reset(); }
     catch (...) {}
 }

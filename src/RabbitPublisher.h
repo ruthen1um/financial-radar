@@ -8,27 +8,8 @@
 #include <vector>
 #include <cstdint>
 #include <chrono>
-#include <amqpcpp.h>
-#include <amqpcpp/linux_tcp.h>
-#include <openssl/ssl.h> // for SSL*
-
-// Define the TCP handler class that inherits from AMQP::TcpHandler
-class RabbitPublisherTcpHandler : public AMQP::TcpHandler {
-public:
-    RabbitPublisherTcpHandler() = default;
-    virtual ~RabbitPublisherTcpHandler() = default;
-
-    // Implement the required virtual methods from AMQP::TcpHandler
-    virtual void onConnected(AMQP::TcpConnection* connection) override;
-    virtual void onClosed(AMQP::TcpConnection* connection) override;
-    virtual void onError(AMQP::TcpConnection* connection, const char* message) override;
-    virtual void onLost(AMQP::TcpConnection* connection) override;
-    virtual void onReady(AMQP::TcpConnection* connection) override;
-    // Match AMQP-CPP signature: returns bool and receives SSL*
-    virtual bool onSecured(AMQP::TcpConnection* connection, const SSL* ssl) override;
-    // implement pure virtual monitor()
-    virtual void monitor(AMQP::TcpConnection* connection, int fd, int flags) override;
-};
+#include <memory>
+#include <SimpleAmqpClient/SimpleAmqpClient.h>
 
 class RabbitPublisher {
 public:
@@ -44,10 +25,8 @@ public:
     void start();
     void stop();
 
-    // push payload; returns false when queue is full
     bool publish(const std::string& payload, const std::string& routingKey = "");
 
-    // metrics getters
     uint64_t published_total() const noexcept;
     uint64_t publish_failures_total() const noexcept;
     uint64_t enqueued_total() const noexcept;
@@ -65,6 +44,16 @@ private:
     void worker_loop(int worker_id);
     void persist_dlq(const QueueItem& it, const std::string& reason);
 
+    // Parse AMQP URL
+    struct ConnectionParams {
+        std::string host = "localhost";
+        int port = 5672;
+        std::string vhost = "/";
+        std::string username = "guest";
+        std::string password = "guest";
+    };
+    ConnectionParams parse_url(const std::string& url);
+
     std::string _address;
     std::atomic<bool> _running{ false };
     mutable std::mutex _mu;
@@ -80,12 +69,6 @@ private:
     std::atomic<uint64_t> _enqueued{ 0 };
     std::atomic<uint64_t> _dlq{ 0 };
 
-    std::string _component = "publisher";
-
-    // Add a member for the TCP handler
-    std::unique_ptr<RabbitPublisherTcpHandler> _tcpHandler;
-
-    // Reconnection control
     std::mutex _reconnect_mu;
     std::chrono::steady_clock::time_point _last_reconnect{ std::chrono::steady_clock::now() };
 };

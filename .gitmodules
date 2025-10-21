@@ -1,12 +1,12 @@
 [submodule "external/Crow"]
 	path = external/Crow
 	url = https://github.com/CrowCpp/Crow
-[submodule "external/AMQP-CPP"]
-	path = external/AMQP-CPP
-	url = https://github.com/CopernicaMarketingSoftware/AMQP-CPP.git
 [submodule "external/date"]
 	path = external/date
 	url = https://github.com/HowardHinnant/date
 [submodule "external/stduuid"]
 	path = external/stduuid
 	url = https://github.com/mariusbancila/stduuid
+[submodule "external/SimpleAmqpClient"]
+	path = external/SimpleAmqpClient
+	url = https://github.com/alanxz/SimpleAmqpClient

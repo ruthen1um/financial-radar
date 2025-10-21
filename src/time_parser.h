@@ -10,7 +10,7 @@
 using namespace std::chrono;
 using namespace date;
 
-sys_time<milliseconds>
+date::sys_time<std::chrono::milliseconds>
 parse8601_full(std::string const& input);
 
 #endif
