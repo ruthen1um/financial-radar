@@ -3,3 +3,11 @@ services:
     build: .
     ports:
       - 80:80
+    tty:
+      true
+    develop:
+      watch:
+        - path: src
+          action: rebuild
+        - path: CMakeLists.txt
+          action: rebuild

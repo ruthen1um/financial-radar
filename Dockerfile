@@ -35,6 +35,18 @@ RUN git clone https://github.com/CopernicaMarketingSoftware/AMQP-CPP.git && \
     cmake --build build --target install && \
     cd /tmp && rm -rf AMQP-CPP
 
+RUN git clone https://github.com/HowardHinnant/date.git && \
+    cd date && \
+    cmake -B build && \
+    cmake --build build --target install && \
+    cd /tmp && rm -rf date
+
+RUN git clone https://github.com/mariusbancila/stduuid.git && \
+    cd stduuid && \
+    cmake -B build && \
+    cmake --build build --target install && \
+    cd /tmp && rm -rf stduuid
+
 
 # Build the app itself
 FROM ubuntu:24.04 AS build_app
