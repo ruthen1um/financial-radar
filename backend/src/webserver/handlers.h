@@ -5,8 +5,8 @@
 
 namespace app::webserver {
 
-crow::response handle_api_transaction(const crow::request& req);
-crow::response handle_api_metrics();
+crow::response handle_transaction(const crow::request& req);
+crow::response handle_metrics();
 
 } // namespace app::webserver
 

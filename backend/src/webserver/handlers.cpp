@@ -10,8 +10,8 @@
 
 namespace app::webserver {
 
-/* /api/transaction handler */
-crow::response handle_api_transaction(const crow::request& req) {
+/* /transaction handler */
+crow::response handle_transaction(const crow::request& req) {
     try {
         auto& metrics {app::core::IngestMetricsSingleton::get_instance()};
         metrics.increment_api_requests();
@@ -371,7 +371,8 @@ crow::response handle_api_transaction(const crow::request& req) {
     }
 }
 
-crow::response handle_api_metrics() {
+/* /metrics handler */
+crow::response handle_metrics() {
     auto& metrics {app::core::IngestMetricsSingleton::get_instance()};
     return crow::response{200, metrics.get_json()};
 }

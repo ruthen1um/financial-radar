@@ -26,13 +26,13 @@ int main() {
 
     spdlog::set_level(spdlog::level::debug);
 
-    CROW_ROUTE(app, "/api/metrics")
+    CROW_ROUTE(app, "/metrics")
         .methods(crow::HTTPMethod::GET)
-        (app::webserver::handle_api_metrics);
+        (app::webserver::handle_metrics);
 
-    CROW_ROUTE(app, "/api/transaction")
+    CROW_ROUTE(app, "/transaction")
         .methods(crow::HTTPMethod::POST)
-        (app::webserver::handle_api_transaction);
+        (app::webserver::handle_transaction);
 
-    app.port(80).multithreaded().run();
+    app.port(8080).multithreaded().run();
 }

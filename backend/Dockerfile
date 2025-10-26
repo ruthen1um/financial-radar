@@ -77,6 +77,6 @@ WORKDIR /app
 
 COPY --from=build_app /app/build/financial_radar /app/financial_radar
 
-EXPOSE 80
+EXPOSE 8080
 
 ENTRYPOINT ["/app/financial_radar"]
