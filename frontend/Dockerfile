@@ -14,4 +14,4 @@ COPY src /app/src
 
 RUN npm run build
 
-CMD ["serve", "-l", "8080", "dist"]
+CMD ["serve", "-s", "-l", "8080", "dist"]
