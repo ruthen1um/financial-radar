@@ -1,47 +1,61 @@
 <script>
-  import svelteLogo from './assets/svelte.svg'
-  import viteLogo from '/vite.svg'
-  import Counter from './lib/Counter.svelte'
+  let username = $state('');
+  let password = $state('');
+  let error = '';
+
+  async function handleLogin() {
+      const response = await fetch('/api/login', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({username, password})
+      });
+
+      if (response.ok) {
+          window.location.href = '/main';
+      } else {
+          error = 'Login failed';
+      }
+  }
 </script>
 
-<main>
-  <div>
-    <a href="https://vite.dev" target="_blank" rel="noreferrer">
-      <img src={viteLogo} class="logo" alt="Vite Logo" />
-    </a>
-    <a href="https://svelte.dev" target="_blank" rel="noreferrer">
-      <img src={svelteLogo} class="logo svelte" alt="Svelte Logo" />
-    </a>
-  </div>
-  <h1>Vite + Svelte</h1>
-
-  <div class="card">
-    <Counter />
-  </div>
-
-  <p>
-    Check out <a href="https://github.com/sveltejs/kit#readme" target="_blank" rel="noreferrer">SvelteKit</a>, the official Svelte app framework powered by Vite!
-  </p>
-
-  <p class="read-the-docs">
-    Click on the Vite and Svelte logos to learn more
-  </p>
-</main>
-
 <style>
-  .logo {
-    height: 6em;
-    padding: 1.5em;
-    will-change: filter;
-    transition: filter 300ms;
-  }
-  .logo:hover {
-    filter: drop-shadow(0 0 2em #646cffaa);
-  }
-  .logo.svelte:hover {
-    filter: drop-shadow(0 0 2em #ff3e00aa);
-  }
-  .read-the-docs {
-    color: #888;
-  }
+    .input-group {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+    }
+
+    .input-group label {
+        width: 80px;
+        text-align: right;
+    }
+
+    .input-group input {
+        flex: 1;
+        padding: 5px;
+    }
+
+    .button {
+        margin-top: 10px;
+        margin-bottom: 10px;
+    }
 </style>
+
+<h1>Authorization</h1>
+
+<form on:submit|preventDefault={handleLogin}>
+    <div class="input-group">
+        <label>Login</label>
+        <input bind:value={username} />
+    </div>
+
+    <div class="input-group">
+        <label>Password</label>
+        <input bind:value={password} />
+    </div>
+
+    <button class="button" type="submit" disabled={!username || !password}>Log in</button>
+</form>
+
+<button>Only view</button>
