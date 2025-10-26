@@ -4,6 +4,7 @@ FROM ubuntu:24.04 AS build_deps
 # Update system and install required system packages
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+    postgresql-server-dev-16 \
     ca-certificates \
     libasio-dev \
     cmake \
@@ -47,12 +48,23 @@ RUN git clone https://github.com/mariusbancila/stduuid.git && \
     cmake --build build --target install && \
     cd /tmp && rm -rf stduuid
 
+RUN git clone https://github.com/jtv/libpqxx && \
+    cd libpqxx && \
+    cmake -B build \
+        -DSKIP_BUILD_TEST=TRUE \
+        -DBUILD_SHARED_LIBS=FALSE \
+        -DBUILD_DOC=FALSE \
+        -DSKIP_BUILD_TEST=FALSE && \
+    cmake --build build --target install && \
+    cd /tmp && rm -rf libpqxx
+
 
 # Build the app itself
 FROM ubuntu:24.04 AS build_app
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+    postgresql-server-dev-16 \
     libasio-dev \
     cmake \
     clang \

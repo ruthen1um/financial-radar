@@ -7,6 +7,7 @@ find_package(spdlog REQUIRED)
 find_package(amqpcpp REQUIRED)
 find_package(date REQUIRED)
 find_package(stduuid REQUIRED)
+find_package(libpqxx REQUIRED)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
@@ -20,4 +21,5 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
     spdlog::spdlog
     amqpcpp
     date::date
-    stduuid)
+    stduuid
+    pqxx)
